@@ -1,18 +1,22 @@
 import asyncio
+import math
 import os
 
-import matplotlib.pyplot as plt
+#import matplotlib.pyplot as plt
+from tkinter import Canvas
+
 from PyQt5.QtCore import QSize
-from matplotlib.figure import Figure
-from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as Canvas
+#from matplotlib.figure import Figure
+#from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as Canvas
 import datetime as dt
 import time
 import pandas as pd
+import logging
 import talib as ta
 import PyQt5.QtWidgets as qt
 from PyQt5 import QtWidgets
 # import PySide2.QtWidgets as qt
-from IPython.display import display, clear_output
+#from IPython.display import display, clear_output
 from ib_insync import IB, util, MarketOrder
 from ib_insync.order import (
     BracketOrder, LimitOrder, Order, OrderState, OrderStatus, StopOrder, Trade)
@@ -20,21 +24,25 @@ from ib_insync.objects import AccountValue, TradeLogEntry
 from ib_insync.contract import *  # noqa
 from ib_insync.order import (
     BracketOrder, LimitOrder, Order, OrderState, OrderStatus, StopOrder, Trade)
-import numpy as np
-import logging
-from dataclasses import dataclass, field
+#import numpy as np
+#from dataclasses import dataclass, field
 from ib_insync.util import dataclassRepr, isNan
 from typing import ClassVar, List, Optional, Union
 from datetime import datetime
 from eventkit import Event, Op
+from matplotlib.figure import Figure
 
 nan = float('nan')
 logfilename = os.path.join('D:\Work\Work\Giulio\logs', datetime.now().strftime("%Y%m%d-%H%M%S"))
 logfilename += '.txt'
 logging.basicConfig(filename=logfilename,format='%(asctime)s,%(msecs)d %(levelname)-8s [%(filename)s:%(lineno)d] %(message)s',
                     datefmt='%Y-%m-%d:%H:%M:%S',
-                    level=logging.INFO)
+                    level=logging.DEBUG)
 logger = logging.getLogger(__name__)
+
+
+def lowerHundred(number):
+    return int(math.floor(number / 100.0)) * 100
 
 
 class ohlcData:
@@ -103,9 +111,9 @@ class MplCanvas(Canvas):
         self.ax = self.fig.add_subplot(111)
         self.ax.set_ylim([0, 1000])
         self.ax.set_xlim([0, 1000])
-        Canvas.__init__(self, self.fig)
+        """Canvas.__init__(self, self.fig)
         Canvas.setSizePolicy(self, QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
-        Canvas.updateGeometry(self)
+        Canvas.updateGeometry(self)"""
 
 
 class MovingAverages():
@@ -124,28 +132,41 @@ class MovingAverages():
         self.ma200val = 0
         self.bid = 0
         self.ask = 0
+        self.availCash = 0
         self.isOrderActive = False
+        self.isGCOrder = False
+        self.isGCBuyOrder = False
+        self.isGCSellOrder = False
+        self.sentGCTO = False
+        self.isDCOrder = False
+        self.isDCBuyOrder = False
+        self.isDCSellOrder = False
+        self.sentDCTO = False
         self.gcpOrderId: int = 0
         self.gcpStatus: str = ''
+        self.size: int = 0
         self.gcpFilled: int = 0
         self.gcpRemaining: int = 0
         self.gctpOrderId: int = 0
         self.gctpStatus: str = ''
         self.gcslOrderId: int = 0
         self.gcslStatus: str = ''
+        self.gcBoughtSize: int = 0
         self.gcAvgFillPrice: float = 0.0
         self.gcLastFillPrice: float = 0.0
-        self.dcOrderId: int = 0
+        self.dcpOrderId: int = 0
+        self.dctpOrderId: int = 0
         self.dcStatus: str = ''
         self.dcFilled: int = 0
         self.dcRemaining: int = 0
         self.dcAvgFillPrice: float = 0.0
         self.dcLastFillPrice: float = 0.0
-        print("init complete")
+        #print("init complete")
 
     def setMAs(self, df):
         self.ma50 = ta.MA(df['close'], 50)
         self.ma200 = ta.MA(df['close'], 200)
+
 
     def TrailBracketOrder(self, parentOrderId, childOrderId, action, quantity, limitPrice, trailAmount):
 
@@ -169,7 +190,6 @@ class MovingAverages():
             stopLoss.trailStopPrice = limitPrice + (limitPrice * .02)
         stopLoss.orderType = "TRAIL"
         stopLoss.auxPrice = limitPrice #trailAmount
-        #trailAmount
         stopLoss.totalQuantity = 1000 #quantity
         stopLoss.parentId = parentOrderId
         stopLoss.transmit = True
@@ -177,7 +197,9 @@ class MovingAverages():
         bracketOrder = [parent, stopLoss]
         return bracketOrder
 
-    def checkGCDC(self):
+
+    def checkGCDC(self, availCash):
+        logging.debug("avail cash - " + str(availCash))
         if (self.firstSignal == True):
             self.firstma50 = round(self.ma50.tail(1).item(), 6)
             self.firstma200 = round(self.ma200.tail(1).item(), 6)
@@ -195,35 +217,74 @@ class MovingAverages():
             currma200 = round(self.ma200.tail(1).item(), 6)
             if(self.isOrderActive == False):
                 if(self.GCCheck == True):
-                    logging.info("golden cross check for " + self.symbol)
-                    logging.info("prev mas - " + str(prevma50) + " " + str(prevma200))
-                    logging.info("curr mas - " + str(currma50) + " " + str(currma200))
-                    logging.info("curr bid and ask vals - " + str(self.bid) + " " + str(self.ask))
-                    if((prevma50 <= prevma200) and (currma50 > currma200)):
+                    logging.debug("golden cross check for " + self.symbol)
+                    logging.debug("prev mas - " + str(prevma50) + " " + str(prevma200))
+                    logging.debug("curr mas - " + str(currma50) + " " + str(currma200))
+                    logging.debug("curr bid and ask vals - " + str(self.bid) + " " + str(self.ask))
+                    if((prevma50 < prevma200) and (currma50 > currma200)):
                         logging.info(("golden cross occured for " + self.symbol))
+                        logging.info("prev mas - " + str(prevma50) + " " + str(prevma200))
+                        logging.info("curr mas - " + str(currma50) + " " + str(currma200))
+                        logging.info("curr bid and ask vals - " + str(self.bid) + " " + str(self.ask))
                         self.GCCheck = False
                         if(self.isOrderActive == False):
                             self.isOrderActive = True
+                            self.isGCBuyOrder = True
                             #order = TrailOrder("Buy", 1000, self.ask, 2)
                             #trade = self.ib.placeOrder(self.contract, order)
-                            order = self.TrailBracketOrder(self.ib.client.getReqId(), self.ib.client.getReqId(), "Buy", 1000, self.ask, (self.ask * .02))
+                            self.gcpOrderId = self.ib.client.getReqId()
+                            #order = self.TrailBracketOrder(self.gcpOrderId, self.gctpOrderId, "Buy", 1000, self.ask, (self.ask * .02))
                             #logging.info("Placing buy order for " + self.symbol + " at " + str(order.trailStopPrice) + " " + str(self.ask) + " with orderId " + str(order.orderId))
+                            order = Order()
+                            order.orderId = self.gcpOrderId
+                            order.action = "Buy"
+                            order.orderType = "MKT"
+                            cash = availCash * .01
+                            logging.info(str(cash) + " " + str(availCash) + " " + str(self.ask))
+                            quantity = (cash / self.ask)
+                            logging.info("quantity - " + str(quantity))
+                            #quantity = quantity * .01
+                            quantity = lowerHundred(quantity)
+                            logging.info("quantity - " + str(quantity))
+                            logging.info("order quantity - " + str(quantity))
+                            order.totalQuantity = quantity
                             return order
                         #self.MADict[symbol] = ma
 
                 else:
-                    logging.info("death cross check for " + self.symbol)
-                    logging.info("prev mas - " + str(prevma50) + " " + str(prevma200))
-                    logging.info("curr mas - " + str(currma50) + " " + str(currma200))
-                    if ((prevma50 >= prevma200) and (currma50 < currma200)):
+                    logging.debug("death cross check for " + self.symbol)
+                    logging.debug("prev mas - " + str(prevma50) + " " + str(prevma200))
+                    logging.debug("curr mas - " + str(currma50) + " " + str(currma200))
+                    logging.debug("curr bid and ask vals - " + str(self.bid) + " " + str(self.ask))
+                    if ((prevma50 > prevma200) and (currma50 < currma200)):
+                        logging.info("prev mas - " + str(prevma50) + " " + str(prevma200))
+                        logging.info("curr mas - " + str(currma50) + " " + str(currma200))
+                        logging.info("curr bid and ask vals - " + str(self.bid) + " " + str(self.ask))
                         logging.info(("death cross occured for " + self.symbol))
                         self.GCCheck = True
                         if (self.isOrderActive == False):
                             self.isOrderActive = True
+                            self.isDCOrder = True
+                            self.isDCSellOrder = True
                             #order = TrailOrder("Sell", 1000, self.bid, 2)
                             #trade = self.ib.placeOrder(self.contract, order)
-                            order = self.TrailBracketOrder(self.ib.client.getReqId(), self.ib.client.getReqId(), "Sell", 1000, self.bid, (self.bid * .02))
+                            self.dcpOrderId = self.ib.client.getReqId()
+                            self.dctpOrderId = self.ib.client.getReqId()
+                            #order = self.TrailBracketOrder(self.dcpOrderId, self.dctpOrderId, "Sell", 1000, self.bid, (self.bid * .02))
                             #logging.info("Placing sell order for " + self.symbol + " at " + str(self.bid) + " with orderId " + str(order.orderId))
+                            order = Order()
+                            order.orderId = self.dcpOrderId
+                            order.action = "Sell"
+                            order.orderType = "MKT"
+                            cash = availCash * .01
+                            logging.info(str(cash) + " " + str(availCash) + " " + str(self.ask))
+                            quantity = cash/self.bid
+                            logging.info("quantity - " + str(quantity))
+                            #quantity = quantity * .01
+                            quantity = lowerHundred(quantity)
+                            logging.info("quantity - " + str(quantity))
+                            logging.info("availcash and bid - " + str(availCash) + " " + str(self.bid))
+                            order.totalQuantity = quantity
                             return order
                         #self.MADict[symbol] = ma
         return None
@@ -273,7 +334,6 @@ class TrailOrder(Order):
     return bracketOrder """
 
 class Window(qt.QWidget):
-
     def __init__(self, host, port, clientId):
         qt.QWidget.__init__(self)
         self.setWindowTitle("Giulio's App")
@@ -283,8 +343,13 @@ class Window(qt.QWidget):
         self.table = HistoricalTable()
         self.MAList = []
         self.MADict = {}
-
-
+        self.symbolInput = qt.QLineEdit()
+        print("test")
+        print(self.symbolInput.text())
+        #symbolInput.setValidator(qt.QIntValidator())
+        #self.symbolInput.setMaxLength(4)
+        #symbolInput.setAlignment(qt.AlignRight)
+        #symbolInput.setFont(qt.QFont("Arial", 20))
         self.connectButton = qt.QPushButton('Connect')
         self.connectButton.setStyleSheet("border: 1px solid black; background: white");
         self.connectButton.resize(100, 32)
@@ -294,17 +359,26 @@ class Window(qt.QWidget):
         self.displayButton.setStyleSheet("border: 1px solid black; background: white");
         self.displayButton.resize(100, 32)
         self.displayButton.clicked.connect(self.onDisplayButtonClicked)
+        self.reqDataButton = qt.QPushButton('ReqData')
+        self.reqDataButton.setStyleSheet("border: 1px solid black; background: white");
+        self.reqDataButton.resize(100, 32)
+        self.reqDataButton.setGeometry(200, 150, 100, 40)
+        self.reqDataButton.clicked.connect(self.onReqDataButtonClicked)
         self.cancelAllButton = qt.QPushButton('CancelAll')
         self.cancelAllButton.setStyleSheet("border: 1px solid black; background: white");
         self.cancelAllButton.resize(100, 32)
         self.cancelAllButton.setGeometry(200, 150, 100, 40)
         self.cancelAllButton.clicked.connect(self.onCancelAllButtonClicked)
 
-        layout = qt.QVBoxLayout(self)
-        # layout.addWidget(self.edit)
+        #layout = qt.QVBoxLayout(self)
+        layout = qt.QFormLayout(self)
+        #e1.textChanged.connect(self.textchanged)
+        layout.addRow("Symbol", self.symbolInput)
+        #layout.addWidget(self.edit)
         layout.addWidget(self.table)
         #layout.addWidget(self.canvas)
         layout.addWidget(self.connectButton)
+        layout.addWidget(self.reqDataButton)
         layout.addWidget(self.cancelAllButton)
         # layout.addStretch(1)
         # self.fig = plt.figure()
@@ -331,6 +405,9 @@ class Window(qt.QWidget):
 
         # self.ib.pendingTickersEvent += self.table.onPendingTickers
 
+    def textchanged(text):
+        print("contents of text box: " + text)
+
     async def accountSummaryAsync(self, account: str = '') -> \
             List[AccountValue]:
         if not self.wrapper.acctSummary:
@@ -347,8 +424,11 @@ class Window(qt.QWidget):
             logging.info('account buying power - ' + account.value)
             accVal: float = 0.0
             accVal = account.value
-            self.availableCash = float(accVal)
-            self.availableCash = round(self.availableCash, 2)
+            #self.availableCash = float(accVal)
+            #self.availableCash = round(self.availableCash, 2)
+            availableCash = float(accVal)
+            availableCash = round(availableCash, 2)
+            self.availableCash += availableCash
             logging.info('available cash - ' + str(self.availableCash))
         logging.info("account summary:: " + str(account.account) + " " + account.tag + " " + account.value)
 
@@ -379,17 +459,88 @@ class Window(qt.QWidget):
         logging.info('reqGlobalCancel')
 
     def order_status_cb(self, trade):
+        symbol = trade.contract.symbol + (trade.contract.currency if trade.contract.secType == 'CASH' else '')
         logging.info("order status for " + str(trade.order.orderId))
-        logging.info("Status filled and remaining - " + trade.orderStatus.status + " " + str(trade.orderStatus.filled) + " " + str(trade.orderStatus.remaining))
+        logging.info("Status, avgFillPrice, filled and remaining for  " + symbol + " - " + trade.orderStatus.status  + " " + str(trade.orderStatus.avgFillPrice) + " " + str(trade.orderStatus.filled) + " " + str(trade.orderStatus.remaining))
+
+        ma = self.MADict[symbol]
+        if(ma.isOrderActive == True):
+            if(ma.GCCheck == False):
+                logging.info("checking for gcorder")
+            if(ma.GCCheck == True):
+                logging.info("checking for dcorder")
 
     def exec_details_cb(self, trade, fill):
-        logging.info("exec details for " + fill.contract.symbol + " with orderid " + str(fill.execution.orderId))
-        if(fill.execution.side == "Sell"):
-            self.availableCash += fill.execution.price
+        symbol = trade.contract.symbol + (
+            trade.contract.currency if trade.contract.secType == 'CASH'
+            else '')
+        ma = self.MADict[symbol]
+
+        isdone = trade.isDone()
+        print(trade.remaining())
+        if (ma.isDCOrder == True):
+            print("DC order is active")
+        if(trade.isDone() == False):
+            logging.info("trade isnt done yet, remaining - " + str(trade.remaining()))
+        if(trade.remaining() == 0):
+            ma.isOrderActive = False
+            totalFilled = fill.execution.shares # trade.orderStatus.filled
+            logging.info("Total filled and average fill price - " + str(totalFilled) + " " + str(fill.execution.price)) #str(trade.orderStatus.avgFillPrice))
+            if (ma.isGCSellOrder == True):
+                logging.info("GC Sell order is done")
+                self.availableCash += (totalFilled * fill.execution.price)
+                ma.isOrderActive = False
+                # ma.isGCOrder = False
+                ma.isGCSellOrder = False
+            if (ma.isGCBuyOrder == True):
+                logging.info("GC Buy order is done")
+                self.availableCash -= (totalFilled * fill.execution.price)
+                #send sell
+                trailSP = fill.execution.price * .8
+                ma.gctpOrderId = self.ib.client.getReqId()
+                order = Order()
+                order.orderId = ma.gctpOrderId
+                order.action = "SELL"
+                order.orderType = "TRAIL"
+                order.totalQuantity = totalFilled
+                order.trailingPercent = 20
+                order.trailStopPrice = trailSP
+                SPTrade = self.ib.placeOrder(trade.contract, order)
+                ma.isGCBuyOrder = False
+                ma.isGCSellOrder = True
+
+            if (ma.isDCBuyOrder == True):
+                logging.info("DC Buy order is done")
+                self.availableCash -= (totalFilled * fill.execution.price)
+                ma.isOrderActive = False
+                ma.isDCBuyOrder = False
+
+            if (ma.isDCSellOrder == True):
+                logging.info("DC Sell order is done")
+                self.availableCash += (totalFilled * fill.execution.price)
+                #send buy
+                trailSP = fill.execution.price * 1.2
+                order = Order()
+                self.dctpOrderId = self.ib.client.getReqId()
+                order.orderId = self.dctpOrderId
+                order.action = "BUY"
+                order.orderType = "TRAIL"
+                order.totalQuantity = totalFilled
+                order.trailingPercent = 20
+                order.trailStopPrice = trailSP
+                SPTrade = self.ib.placeOrder(trade.contract, order)
+                ma.isGCBuyOrder = False
+                ma.isDCBuyOrder = True
+
+            logging.info("exec details for " + symbol + " with orderid " + str(fill.execution.orderId))
+
+        #if(fill.execution.side == "Sell"):
+        #    self.availableCash += fill.execution.price
+
 
     def onPendingTickers(self, tickers):
         for ticker in tickers:
-            logging.info("ticker - " + str(ticker.contract.conId) + " " + str(ticker.contract.secType) + " " + ticker.contract.symbol + " " + ticker.contract.currency)
+            logging.debug("ticker - " + str(ticker.contract.conId) + " " + str(ticker.contract.secType) + " " + ticker.contract.symbol + " " + ticker.contract.currency)
             for col, header in enumerate(self.headers):
                 if col == 0:
                     continue
@@ -397,22 +548,28 @@ class Window(qt.QWidget):
                 symbol = ticker.contract.symbol + (
                     ticker.contract.currency if ticker.contract.secType == 'CASH'
                     else '')
-                ma = self.MADict[symbol]
-                logging.info("Values - " + str(ticker.contract.secType) + " " + str(ticker.contract.conId) + " " + symbol + " " + str(header) + " " + str(col) + " val- " + str(val))
-                if(str(header) == 'bid'):
-                    ma.bid = val
-                if(str(header) == 'ask'):
-                    ma.ask = val
+                if(symbol in self.MADict):
+                    logging.debug(symbol + " key is present")
+                    ma = self.MADict[symbol]
+                    logging.debug("Values - " + str(ticker.contract.secType) + " " + str(
+                        ticker.contract.conId) + " " + symbol + " " + str(header) + " " + str(col) + " val- " + str(
+                        val))
+                    if (str(header) == 'bid'):
+                        ma.bid = val
+                    if (str(header) == 'ask'):
+                        ma.ask = val
+                else:
+                    logging.info(symbol + " key is not present")
 
     def onBarUpdate(self, bars, hasNewBar):
         self.xs.append(dt.datetime.now().strftime('%H:%M:%S.%f'))
         # logging.debug("bar update " + str(hasNewBar) + " for " + str(bars.reqId))
-        logging.info(bars[-1])
+        logging.debug(bars[-1])
         symbol = bars.contract.symbol + (
             bars.contract.currency if bars.contract.secType == 'CASH'
             else '')
         ma = self.MADict[symbol]
-        logging.info("update for " + ma.symbol)
+        logging.debug("update for " + ma.symbol)
         df = util.df(bars)
         # logging.debug(df)
         ma.setMAs(df)
@@ -425,10 +582,10 @@ class Window(qt.QWidget):
 
         # self.ax.clear()
         # self.ax.plot(self.xs, self.ys)
-        plt.xticks(rotation=45, ha='right')
-        plt.subplots_adjust(bottom=0.30)
-        plt.title('50MA')
-        plt.ylabel('MA')
+        #plt.xticks(rotation=45, ha='right')
+        #plt.subplots_adjust(bottom=0.30)
+        #plt.title('50MA')
+        #plt.ylabel('MA')
         """logging.debug("ma50")
         logging.debug(ma50)
         logging.debug("ma200")
@@ -436,13 +593,17 @@ class Window(qt.QWidget):
         logging.debug("last items")
         logging.debug(ma50.tail(1).item())
         logging.debug(ma200.tail(1).item())"""
-        orderList = ma.checkGCDC()
+        logging.debug("aval cash and lH - " + str(self.availableCash))
+        #cash = lowerHundred(self.availableCash * .01)
+        orderList = ma.checkGCDC(self.availableCash)
         if(orderList is not None):
-            orderQuantity = 0
+            logging.info("aval cash and lH - " + str(self.availableCash))
+            self.ib.placeOrder(bars.contract, orderList)
+            """orderQuantity = 0
             for order in orderList:
                 if(order.orderType == "LMT"):
                     if(order.action == "Buy"):
-                        order.totalQuantity = 1000 #(self.availableCash/ma.bid) * .01
+                        order.totalQuantity = lowerHundred((self.availableCash/ma.bid) * .01)
                         self.availableCash -= (order.totalQuantity * order.trailStopPrice)
                         logging.info("Placing buy order for " + ma.symbol + " " + str(ma.bid) + " with orderId " + str(order.orderId))
                     else:
@@ -461,10 +622,10 @@ class Window(qt.QWidget):
                             logging.info("Placing sell order for " + ma.symbol + " at " + str(ma.ask) + " with orderId " + str(order.orderId))
 
                         logging.info("Placing " + order.action + " order for " + ma.symbol + " at " + str(order.trailStopPrice) + " " + str(ma.ask) + " with orderId " + str(order.orderId) + " " + str(trade.order.orderId))
-                trade = self.ib.placeOrder(bars.contract, order)
+                trade = self.ib.placeOrder(bars.contract, order)"""
 
         if(ma.isOrderActive == False and ma.GCCheck == True):
-            logging.info("order is not active and gccheck is true")
+            logging.debug("order is not active and gccheck is true")
         self.MADict[symbol] = ma
         """if (ma.firstSignal == True):
             ma.firstma50 = round(ma50.tail(1).item(), 6)
@@ -533,6 +694,8 @@ class Window(qt.QWidget):
         if text:
             logging.debug('eval text ')  # + eval(text))
             contract = eval(text)
+            print("contract symbol is " + contract.symbol)
+            self.ib.reqMktData(contract, '', False, False, None)
             logging.debug("requesting historical and mkt data for " + text)
             bars = self.ib.reqHistoricalData(
                 contract,
@@ -543,12 +706,15 @@ class Window(qt.QWidget):
                 useRTH=True,
                 formatDate=1,
                 keepUpToDate=True)
-            ticker = self.ib.reqMktData(contract, '', False, False, None)
-            logging.info(bars[-1])
+            #self.ib.reqMktData(contract, '', False, False, None)
+            #logging.info(bars[-1])
             logging.debug("sectype " + str(
                 bars.reqId) + " " + str(bars.contract.conId) + " " + bars.contract.secType + " " + bars.contract.symbol + " " + bars.contract.currency)
             self.table.addHistoricalData(bars.reqId, contract)
             df = util.df(bars)
+            #if(df is None):
+            #    print("returning")
+            #    return
             # with pd.option_context('display.max_rows', None, 'display.max_columns',
             #                       None):  # more options can be specified also
             #    logging.debug(df)
@@ -614,12 +780,34 @@ class Window(qt.QWidget):
             logging.debug("trying to connect")
             # ib = IB()
             # ib.connect('127.0.0.1', 7497, clientId=3)
-            self.ib.connect('127.0.0.1', 7497, clientId=2)  # *self.connectInfo)
+            #self.reqData()
+            self.ib.connect('127.0.0.1', 7497, clientId=1)  # *self.connectInfo)
             logging.debug("connected - ")  # + self.ib.isConnected())
             # self.ib.reqMarketDataType(2)
             self.connectButton.setText('Disconnect')
             self.ib.reqAccountSummary()
-            self.reqData()
+            """order = Order()
+            order.orderId = self.ib.client.getReqId()
+            order.action = "Sell"
+            order.orderType = "LMT"
+            order.totalQuantity = 1000
+            order.lmtPrice = 780
+            apple_contract = Contract()
+            apple_contract.symbol = 'TSLA'
+            apple_contract.secType = 'STK'
+            apple_contract.exchange = 'SMART'
+            apple_contract.currency = 'USD'
+            trade = self.ib.placeOrder(apple_contract, order)"""
+
+    def onReqDataButtonClicked(self):
+        print("Requesting data for " + self.symbolInput.text())
+        symbol = self.symbolInput.text()
+        #self.add_historical(f"Forex('{symbol}')")
+        self.add_historical(f"Stock('{symbol}', 'SMART', 'USD')")
+        """self.add_historical("Stock('TSLA', 'SMART', 'USD')")
+        self.add_historical("Stock('IBM', 'SMART', 'USD')")
+        self.add_historical("Stock('MSFT', 'SMART', 'USD')")
+        self.add_historical("Stock('FB', 'SMART', 'USD')")"""
 
     def onCancelAllButtonClicked(self):
         logging.info("Cancelling all open orders")
@@ -631,11 +819,14 @@ class Window(qt.QWidget):
         """for symbol in ('EURUSD', 'USDJPY', 'EURGBP', 'USDCAD',
                        'EURCHF', 'AUDUSD', 'NZDUSD'):
             logging.debug("requesting for " + symbol)
-            self.add_historical(f"Forex('{symbol}')")"""
-        #self.add_historical("Stock('TSLA', 'SMART', 'USD')")
-        #self.add_historical("Stock('IBM', 'SMART', 'USD')")
-        #self.add_historical("Stock('MSFT', 'SMART', 'USD')")
-        self.add_historical("Stock('FB', 'SMART', 'USD')")
+            self.add_historical(f"Forex('{symbol}')")
+
+        self.add_historical("Stock('TSLA', 'SMART', 'USD')")
+        self.add_historical("Stock('IBM', 'SMART', 'USD')")
+        self.add_historical("Stock('MSFT', 'SMART', 'USD')")
+        self.add_historical("Stock('FB', 'SMART', 'USD')")"""
+        symbol = self.symbolInput.text()
+        self.add_historical(f"Stock('{symbol}', 'SMART', 'USD')")
 
     def closeEvent(self, ev):
         logging.debug("closing")
